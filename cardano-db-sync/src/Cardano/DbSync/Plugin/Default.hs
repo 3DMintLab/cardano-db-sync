@@ -29,6 +29,7 @@ import           Cardano.Ledger.Coin (Coin (..))
 import           Cardano.Ledger.Credential (StakeCredential)
 import           Cardano.Ledger.Crypto (StandardCrypto)
 
+import           Cardano.Slotting.Block
 import           Cardano.Slotting.Slot (EpochNo (..))
 
 import           Cardano.Sync.Api
@@ -46,9 +47,12 @@ import           Control.Monad.Trans.Except.Extra (newExceptT)
 import           Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 
+import qualified Data.Strict.Maybe as Strict
+
 import           Database.Persist.Sql (SqlBackend)
 
 import           Ouroboros.Consensus.Cardano.Block (HardForkBlock (..))
+import           Ouroboros.Network.Block
 
 import           System.IO.Unsafe (unsafePerformIO)
 
@@ -81,7 +85,7 @@ insertDefaultBlock backend tracer env blockDetails = do
       -- update ledgerStateVar.
       let lenv = envLedger env
       lStateSnap <- liftIO $ applyBlock (envLedger env) cblk details
-      mkSnapshotMaybe lStateSnap (isSyncedWithinSeconds details 60)
+      mkSnapshotMaybe lStateSnap (blockNo cblk) (isSyncedWithinSeconds details 600)
       handleLedgerEvents tracer (envLedger env) (lssPoint lStateSnap) (lssEvents lStateSnap)
       case cblk of
         BlockByron blk ->
@@ -98,18 +102,29 @@ insertDefaultBlock backend tracer env blockDetails = do
 
     mkSnapshotMaybe
         :: (MonadBaseControl IO m, MonadIO m)
-        => LedgerStateSnapshot -> DB.SyncState
+        => LedgerStateSnapshot -> BlockNo -> DB.SyncState
         -> ExceptT SyncNodeError (ReaderT SqlBackend m) ()
-    mkSnapshotMaybe snapshot syncState =
-      whenJust (lssNewEpoch snapshot) $ \newEpoch -> do
-        liftIO $ logDebug (leTrace $ envLedger env) "Preparing for a snapshot"
-        let newEpochNo = Generic.neEpoch newEpoch
-        -- flush all volatile data
-        finalizeEpochBulkOps (envLedger env)
-        liftIO $ logDebug (leTrace $ envLedger env) "Taking a ledger a snapshot"
-        -- finally take a ledger snapshot
-        -- TODO: Instead of newEpochNo - 1, is there any way to get the epochNo from 'lssOldState'?
-        liftIO $ saveCleanupState (envLedger env) (lssOldState snapshot) syncState  (Just $ newEpochNo - 1)
+    mkSnapshotMaybe snapshot blkNo syncState =
+      case lssNewEpoch snapshot of
+        Strict.Just newEpoch -> do
+          liftIO $ logDebug (leTrace $ envLedger env) "Preparing for a snapshot"
+          let newEpochNo = Generic.neEpoch newEpoch
+          -- flush all volatile data
+          finalizeEpochBulkOps (envLedger env)
+          liftIO $ logDebug (leTrace $ envLedger env) "Taking a ledger a snapshot"
+          -- finally take a ledger snapshot
+          -- TODO: Instead of newEpochNo - 1, is there any way to get the epochNo from 'lssOldState'?
+          liftIO $ saveCleanupState (envLedger env) (lssOldState snapshot) (Just $ newEpochNo - 1)
+        Strict.Nothing | timeToSnapshot syncState blkNo -> do
+          isEmpty <- isEmptyEpochBulkOps (envLedger env)
+          when isEmpty $
+            liftIO $ saveCleanupState (envLedger env) (lssOldState snapshot) Nothing
+        _ -> pure ()
+
+    timeToSnapshot :: DB.SyncState -> BlockNo -> Bool
+    timeToSnapshot syncState blkNo = case (syncState, unBlockNo blkNo) of
+      (DB.SyncFollowing, bno) -> bno `mod` 500 == 0
+      (DB.SyncLagging, bno) -> bno `mod` 10000 == 0
 
 -- -------------------------------------------------------------------------------------------------
 -- This horrible hack is only need because of the split between `cardano-sync` and `cardano-db-sync`.

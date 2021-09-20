@@ -28,7 +28,6 @@ import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.List as List
 import qualified Data.List.Extra as List
 import qualified Data.Map.Strict as Map
-import qualified Data.Text as Text
 
 import           Database.Esqueleto.Legacy (InnerJoin (..), Value (..), countRows, desc, from, on,
                    orderBy, select, sum_, val, where_, (==.), (^.))
@@ -113,15 +112,17 @@ diffRewardMap
 diffRewardMap epochNo dbMap ledgerMap = do
     liftIO $ do
       putStrLn $ "dbMap length: " ++ show (Map.size dbMap)
+      putStrLn $ "dbMap: " ++ show dbMap
       putStrLn $ "ledgerMap length: " ++ show (Map.size ledgerMap)
+      putStrLn $ "ledgerMap: " ++ show ledgerMap
       putStrLn $ "diffMap length: " ++ show (Map.size diffMap)
       mapM_ reportDiff $ Map.toList diffMap
     when (Map.size diffMap > 0) $ do
       reportCount epochNo diffMap
-      panicAbort $ Text.unlines
-            [ "Rewards differ between ledger and db-sync."
-            , "Please report at https://github.com/input-output-hk/cardano-db-sync/issues."
-            ]
+--      panicAbort $ Text.unlines
+--            [ "Rewards differ between ledger and db-sync."
+--            , "Please report at https://github.com/input-output-hk/cardano-db-sync/issues."
+--            ]
   where
     keys :: [Generic.StakeCred]
     keys = List.nubOrd (Map.keys dbMap ++ Map.keys ledgerMap)
